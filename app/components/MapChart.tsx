@@ -1,21 +1,98 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { IconLayer, TextLayer } from "@deck.gl/layers";
+import { IconLayer } from "@deck.gl/layers";
 import DeckGL from "@deck.gl/react";
 import { WebMercatorViewport } from "@deck.gl/core";
 import { Progress, Card } from "@nextui-org/react";
 import { useTheme } from "next-themes";
 import Map from "react-map-gl/mapbox"; // ✅ Using correct Map import
 
-// Helper function: Convert snake_case to Title Case
-const snakeToTitle = (str: string): string => {
-  return str
-    .replace(/_/g, " ") // Replace underscores with spaces
-    .replace(/\b\w/g, (char) => char.toUpperCase()); // Capitalize first letter
+// ------------------ HELPER FUNCTIONS ------------------
+
+// Converts snake_case to Title Case (if needed)
+const snakeToTitle = (str: string): string =>
+  str.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+
+// Returns a marker color array for use in IconLayer
+const getMarkerColor = (status: string): number[] => {
+  switch (status) {
+    case "healthy":
+      return [0, 192, 0]; // Green
+    case "predicted failure":
+      return [255, 255, 128]; // Yellow
+    case "down for repairs":
+      return [235, 52, 52]; // Red
+    default:
+      return [40, 171, 160]; // Default teal
+  }
 };
 
-// ** Mock Data for Testing (Ensures All Points Are Shown) **
+// Returns a CSS color string for a given status (used in the donut chart)
+const getStatusColorString = (status: string): string => {
+  switch (status) {
+    case "healthy":
+      return "green";
+    case "predicted failure":
+      return "yellow";
+    case "down for repairs":
+      return "red";
+    default:
+      return "teal";
+  }
+};
+
+// ------------------ CLUSTER DONUT COMPONENT ------------------
+
+// This component renders an SVG donut chart for a cluster.
+// It expects a "colorCounts" object (keys are status strings and values are counts)
+// and a total number of points.
+const ClusterDonut = ({
+  colorCounts,
+  total,
+}: {
+  colorCounts: { [key: string]: number };
+  total: number;
+}) => {
+  return (
+    <svg width="50" height="50" viewBox="0 0 50 50">
+      {Object.entries(colorCounts).reduce((acc, [status, count], i, arr) => {
+        const percentage = (count / total) * 100;
+        const offset = arr
+          .slice(0, i)
+          .reduce((sum, [_, c]) => sum + (Number(c) / total) * 100, 0);
+        return [
+          ...acc,
+          <circle
+            key={status}
+            cx="25"
+            cy="25"
+            r="20"
+            fill="none"
+            stroke={getStatusColorString(status)}
+            strokeWidth="10"
+            strokeDasharray={`${percentage} ${100 - percentage}`}
+            strokeDashoffset={-offset}
+          />,
+        ];
+      }, [] as JSX.Element[])}
+      <text
+        x="50%"
+        y="50%"
+        textAnchor="middle"
+        dy=".3em"
+        fontSize="12"
+        fontWeight="bold"
+      >
+        {total}
+      </text>
+    </svg>
+  );
+};
+
+// ------------------ MOCK DATA ------------------
+
+// Sample data with six points.
 const testData = [
   {
     id: "latitudes",
@@ -49,6 +126,7 @@ const testData = [
   },
 ];
 
+// ------------------ MAP THEME HOOK ------------------
 const useMapTheme = () => {
   const { resolvedTheme } = useTheme();
   return resolvedTheme === "dark"
@@ -56,7 +134,7 @@ const useMapTheme = () => {
     : "mapbox://styles/mapbox/streets-v11";
 };
 
-// ----------------- UNION–FIND HELPER CLASS -----------------
+// ------------------ UNION–FIND HELPER CLASS ------------------
 class UnionFind {
   parent: number[];
 
@@ -83,13 +161,17 @@ class UnionFind {
   }
 }
 
+// ------------------ MAIN COMPONENT ------------------
 const MapChart = () => {
   const [isLoading] = useState<boolean>(false);
   const mapTheme = useMapTheme();
 
-  // Process the data to match Deck.gl's format.
+  // Process raw data into a more convenient format.
   const rawData = testData[0].values.map((lat, index) => ({
-    location: { latitude: lat, longitude: testData[1].values[index] },
+    location: {
+      latitude: lat,
+      longitude: testData[1].values[index],
+    },
     name: testData[2].values[index],
     metadata: { status: testData[3].values[index] },
   }));
@@ -110,33 +192,19 @@ const MapChart = () => {
   };
   const [viewState, setViewState] = useState(initialViewState);
 
-  // Function to pick a marker color based on status.
-  const getMarkerColor = (status: string) => {
-    switch (status) {
-      case "healthy":
-        return [0, 192, 0]; // Green
-      case "predicted failure":
-        return [255, 255, 128]; // Yellow
-      case "down for repairs":
-        return [235, 52, 52]; // Red
-      default:
-        return [40, 171, 160]; // Default teal
-    }
-  };
-
-  // ----------------- CLUSTERING LOGIC -----------------
+  // ------------------ CLUSTERING LOGIC ------------------
+  // Using union–find, points within a fixed screen-space radius are grouped.
   const clusters = useMemo(() => {
-    // Define a clustering radius in screen pixels (adjust as needed)
-    const clusterRadius = 50;
+    const clusterRadius = 50; // in pixels
 
-    // Create a viewport to project geographic coordinates to screen space.
+    // Create a viewport for projecting geographic coordinates.
     const viewport = new WebMercatorViewport({
       ...viewState,
       width: window.innerWidth,
       height: window.innerHeight,
     });
 
-    // Project each rawData point.
+    // Project each rawData point to screen space.
     const projectedPoints = rawData.map((point, index) => {
       const [x, y] = viewport.project([
         point.location.longitude,
@@ -148,10 +216,8 @@ const MapChart = () => {
     const n = projectedPoints.length;
     if (n === 0) return [];
 
-    // Initialize union–find structure.
+    // Initialize union–find.
     const uf = new UnionFind(n);
-
-    // For each pair of points, union them if they are within clusterRadius.
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const dx = projectedPoints[i].screenX - projectedPoints[j].screenX;
@@ -163,7 +229,7 @@ const MapChart = () => {
       }
     }
 
-    // Group points by their root parent.
+    // Group points by their root.
     const groups: { [key: number]: any[] } = {};
     for (let i = 0; i < n; i++) {
       const root = uf.find(i);
@@ -173,14 +239,13 @@ const MapChart = () => {
       groups[root].push(projectedPoints[i]);
     }
 
-    // Build an array of clusters.
+    // Build clusters.
     const clusteredData = [];
     Object.values(groups).forEach((group) => {
       if (group.length === 1) {
         // A single point remains as is.
         clusteredData.push({ ...group[0], isCluster: false });
       } else {
-        // Create a cluster with aggregated data.
         const count = group.length;
         const avgLat =
           group.reduce((sum, p) => sum + p.location.latitude, 0) / count;
@@ -192,7 +257,7 @@ const MapChart = () => {
           const status = p.metadata.status;
           statusCounts[status] = (statusCounts[status] || 0) + 1;
         });
-        // Determine the dominant status (for marker color).
+        // (Optional) Determine dominant status for color selection.
         let dominantStatus = group[0].metadata.status;
         let maxCount = 0;
         Object.keys(statusCounts).forEach((status) => {
@@ -205,9 +270,9 @@ const MapChart = () => {
           id: "cluster-" + group.map((p) => p.index).join("-"),
           location: { latitude: avgLat, longitude: avgLon },
           metadata: {
-            statusCounts: statusCounts,
-            count: count,
-            dominantStatus: dominantStatus,
+            statusCounts,
+            count,
+            dominantStatus,
           },
           isCluster: true,
         });
@@ -217,11 +282,16 @@ const MapChart = () => {
     return clusteredData;
   }, [rawData, viewState]);
 
-  // ----------------- LAYER SETUP -----------------
+  // Separate individual points from clusters.
+  const individualPoints = clusters.filter((d) => !d.isCluster);
+  const clusterPoints = clusters.filter((d) => d.isCluster);
+
+  // ------------------ LAYER SETUP ------------------
+  // Render individual points using an IconLayer.
   const layers = [
     new IconLayer({
       id: "icon-layer",
-      data: clusters,
+      data: individualPoints,
       pickable: true,
       iconAtlas: "/dot.png",
       iconMapping: {
@@ -230,36 +300,18 @@ const MapChart = () => {
       getIcon: () => "marker",
       sizeScale: 15,
       getPosition: (d: any) => [d.location.longitude, d.location.latitude],
-      // Use a larger marker size for clusters.
-      getSize: (d: any) =>
-        d.isCluster ? Math.max(10, Math.log2(d.metadata.count) * 10) : 5,
-      // Use the dominant status for clusters or the actual status for single points.
-      getColor: (d: any) =>
-        getMarkerColor(
-          d.isCluster ? d.metadata.dominantStatus : d.metadata.status
-        ),
+      getSize: () => 5,
+      getColor: (d: any) => getMarkerColor(d.metadata.status),
       onHover: (info) => setHoverInfo(info),
     }),
-    // TextLayer to display the breakdown of statuses in clusters.
-    new TextLayer({
-      id: "text-layer",
-      data: clusters.filter((d: any) => d.isCluster && d.metadata.count > 1),
-      getPosition: (d: any) => [d.location.longitude, d.location.latitude],
-      getText: (d: any) => {
-        // Build a text string such as "2G 3Y 1R"
-        const sc = d.metadata.statusCounts;
-        const parts = [];
-        if (sc["healthy"]) parts.push(`${sc["healthy"]}G`);
-        if (sc["predicted failure"]) parts.push(`${sc["predicted failure"]}Y`);
-        if (sc["down for repairs"]) parts.push(`${sc["down for repairs"]}R`);
-        return parts.join(" ");
-      },
-      getSize: 16,
-      getColor: [255, 255, 255],
-      getTextAnchor: "middle",
-      getAlignmentBaseline: "center",
-    }),
   ];
+
+  // Create a viewport to compute screen coordinates for cluster overlays.
+  const viewport = new WebMercatorViewport({
+    ...viewState,
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
 
   return (
     <DeckGL
@@ -276,6 +328,40 @@ const MapChart = () => {
         mapboxAccessToken={process.env.NEXT_PUBLIC_MAPBOX_PUBKEY}
         mapStyle={mapTheme}
       />
+
+      {/* Render the donut chart overlay for each cluster */}
+      {clusterPoints.map((cluster: any) => {
+        // Project geographic coordinates to screen space.
+        const [x, y] = viewport.project([
+          cluster.location.longitude,
+          cluster.location.latitude,
+        ]);
+        return (
+          <div
+            key={cluster.id}
+            style={{
+              position: "absolute",
+              left: x - 25, // center the 50px-wide donut
+              top: y - 25,
+              cursor: "pointer",
+            }}
+            onClick={() => {
+              // Zoom in on cluster click.
+              setViewState((prev: any) => ({
+                ...prev,
+                zoom: Math.min(prev.zoom + 1, 16),
+                longitude: cluster.location.longitude,
+                latitude: cluster.location.latitude,
+              }));
+            }}
+          >
+            <ClusterDonut
+              colorCounts={cluster.metadata.statusCounts}
+              total={cluster.metadata.count}
+            />
+          </div>
+        );
+      })}
 
       {hoverInfo?.object && (
         <div
