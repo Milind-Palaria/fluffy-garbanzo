@@ -87,7 +87,7 @@ const MapChart = () => {
   const [isLoading] = useState<boolean>(false);
   const mapTheme = useMapTheme();
 
-  // Process the data to match Deck.gl's format
+  // Process the data to match Deck.gl's format.
   const rawData = testData[0].values.map((lat, index) => ({
     location: { latitude: lat, longitude: testData[1].values[index] },
     name: testData[2].values[index],
@@ -100,7 +100,7 @@ const MapChart = () => {
     y: number;
   }>();
 
-  // Maintain view state so that clustering can update as you zoom/pan.
+  // Maintain view state so that clustering updates on zoom/pan.
   const initialViewState = {
     longitude: -122.4194,
     latitude: 37.7749,
@@ -110,7 +110,7 @@ const MapChart = () => {
   };
   const [viewState, setViewState] = useState(initialViewState);
 
-  // Determine marker color based on status.
+  // Function to pick a marker color based on status.
   const getMarkerColor = (status: string) => {
     switch (status) {
       case "healthy":
@@ -129,14 +129,14 @@ const MapChart = () => {
     // Define a clustering radius in screen pixels (adjust as needed)
     const clusterRadius = 50;
 
-    // Create a viewport for projecting geographic coordinates into screen space.
+    // Create a viewport to project geographic coordinates to screen space.
     const viewport = new WebMercatorViewport({
       ...viewState,
       width: window.innerWidth,
       height: window.innerHeight,
     });
 
-    // Project each rawData point to screen coordinates.
+    // Project each rawData point.
     const projectedPoints = rawData.map((point, index) => {
       const [x, y] = viewport.project([
         point.location.longitude,
@@ -151,7 +151,7 @@ const MapChart = () => {
     // Initialize union–find structure.
     const uf = new UnionFind(n);
 
-    // For each pair of points, union them if they are within the clusterRadius.
+    // For each pair of points, union them if they are within clusterRadius.
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const dx = projectedPoints[i].screenX - projectedPoints[j].screenX;
@@ -177,7 +177,7 @@ const MapChart = () => {
     const clusteredData = [];
     Object.values(groups).forEach((group) => {
       if (group.length === 1) {
-        // A single point; not a cluster.
+        // A single point remains as is.
         clusteredData.push({ ...group[0], isCluster: false });
       } else {
         // Create a cluster with aggregated data.
@@ -186,12 +186,13 @@ const MapChart = () => {
           group.reduce((sum, p) => sum + p.location.latitude, 0) / count;
         const avgLon =
           group.reduce((sum, p) => sum + p.location.longitude, 0) / count;
-        // Aggregate statuses to determine the dominant color.
+        // Aggregate counts for each status.
         const statusCounts: { [key: string]: number } = {};
         group.forEach((p) => {
           const status = p.metadata.status;
           statusCounts[status] = (statusCounts[status] || 0) + 1;
         });
+        // Determine the dominant status (for marker color).
         let dominantStatus = group[0].metadata.status;
         let maxCount = 0;
         Object.keys(statusCounts).forEach((status) => {
@@ -203,7 +204,11 @@ const MapChart = () => {
         clusteredData.push({
           id: "cluster-" + group.map((p) => p.index).join("-"),
           location: { latitude: avgLat, longitude: avgLon },
-          metadata: { status: dominantStatus, count: count },
+          metadata: {
+            statusCounts: statusCounts,
+            count: count,
+            dominantStatus: dominantStatus,
+          },
           isCluster: true,
         });
       }
@@ -225,18 +230,30 @@ const MapChart = () => {
       getIcon: () => "marker",
       sizeScale: 15,
       getPosition: (d: any) => [d.location.longitude, d.location.latitude],
-      // Use a larger marker size for clusters (here we use logarithmic scaling)
+      // Use a larger marker size for clusters.
       getSize: (d: any) =>
         d.isCluster ? Math.max(10, Math.log2(d.metadata.count) * 10) : 5,
-      getColor: (d: any) => getMarkerColor(d.metadata.status),
+      // Use the dominant status for clusters or the actual status for single points.
+      getColor: (d: any) =>
+        getMarkerColor(
+          d.isCluster ? d.metadata.dominantStatus : d.metadata.status
+        ),
       onHover: (info) => setHoverInfo(info),
     }),
-    // Optionally, add a TextLayer to display cluster counts.
+    // TextLayer to display the breakdown of statuses in clusters.
     new TextLayer({
       id: "text-layer",
       data: clusters.filter((d: any) => d.isCluster && d.metadata.count > 1),
       getPosition: (d: any) => [d.location.longitude, d.location.latitude],
-      getText: (d: any) => `${d.metadata.count}`,
+      getText: (d: any) => {
+        // Build a text string such as "2G 3Y 1R"
+        const sc = d.metadata.statusCounts;
+        const parts = [];
+        if (sc["healthy"]) parts.push(`${sc["healthy"]}G`);
+        if (sc["predicted failure"]) parts.push(`${sc["predicted failure"]}Y`);
+        if (sc["down for repairs"]) parts.push(`${sc["down for repairs"]}R`);
+        return parts.join(" ");
+      },
       getSize: 16,
       getColor: [255, 255, 255],
       getTextAnchor: "middle",
@@ -272,7 +289,7 @@ const MapChart = () => {
           <Card className="shadow-xl p-2 rounded-md gap-1">
             <p className="text-md font-medium">
               {hoverInfo.object.isCluster
-                ? `Cluster of ${hoverInfo.object.metadata.count}`
+                ? `Cluster: ${hoverInfo.object.metadata.count}`
                 : hoverInfo.object.name}
             </p>
           </Card>
